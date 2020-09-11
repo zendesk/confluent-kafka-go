@@ -17,6 +17,8 @@ package kafka
  */
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"sync"
 	"time"
@@ -28,6 +30,9 @@ import (
 #include <stdlib.h>
 */
 import "C"
+
+var globalCgoMapLock sync.Mutex
+var globalCgoMap map[unsafe.Pointer]*handle = make(map[unsafe.Pointer]*handle)
 
 // OAuthBearerToken represents the data to be transmitted
 // to a broker during SASL/OAUTHBEARER authentication.
@@ -101,9 +106,10 @@ type handle struct {
 	//
 	// cgo map
 	// Maps C callbacks based on cgoid back to its Go object
-	cgoLock   sync.Mutex
-	cgoidNext uintptr
-	cgomap    map[int]cgoif
+	cgoLock          sync.Mutex
+	cgoidNext        uintptr
+	cgomap           map[int]cgoif
+	globalCgoPointer unsafe.Pointer
 
 	//
 	// producer
@@ -123,10 +129,20 @@ type handle struct {
 
 	// WaitGroup to wait for spawned go-routines to finish.
 	waitGroup sync.WaitGroup
+
+	tlsConfig     *tls.Config
+	intermediates *x509.CertPool
 }
 
 func (h *handle) String() string {
 	return h.name
+}
+
+func (h *handle) setupGlobalCgoMap() {
+	h.globalCgoPointer = C.malloc(C.size_t(1))
+	globalCgoMapLock.Lock()
+	globalCgoMap[h.globalCgoPointer] = h
+	globalCgoMapLock.Unlock()
 }
 
 func (h *handle) setup() {
@@ -134,6 +150,7 @@ func (h *handle) setup() {
 	h.rktNameCache = make(map[*C.rd_kafka_topic_t]string)
 	h.cgomap = make(map[int]cgoif)
 	h.name = C.GoString(C.rd_kafka_name(h.rk))
+	h.intermediates = x509.NewCertPool()
 }
 
 func (h *handle) cleanup() {

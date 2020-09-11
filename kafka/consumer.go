@@ -17,6 +17,7 @@ package kafka
  */
 
 import (
+	"crypto/tls"
 	"fmt"
 	"math"
 	"time"
@@ -26,6 +27,7 @@ import (
 /*
 #include <stdlib.h>
 #include <librdkafka/rdkafka.h>
+#include "tlscb_thunk.h"
 
 
 static rd_kafka_topic_partition_t *_c_rdkafka_topic_partition_list_entry(rd_kafka_topic_partition_list_t *rktparlist, int idx) {
@@ -411,6 +413,14 @@ func NewConsumer(conf *ConfigMap) (*Consumer, error) {
 	}
 	eventsChanSize := v.(int)
 
+	v, err = confCopy.extract("go.tls.config", nil)
+	if err != nil {
+		return nil, err
+	}
+	if v != nil {
+		c.handle.tlsConfig = v.(*tls.Config)
+	}
+
 	logsChanEnable, logsChan, err := confCopy.extractLogConfig()
 	if err != nil {
 		return nil, err
@@ -424,9 +434,15 @@ func NewConsumer(conf *ConfigMap) (*Consumer, error) {
 	defer C.free(unsafe.Pointer(cErrstr))
 
 	C.rd_kafka_conf_set_events(cConf, C.RD_KAFKA_EVENT_REBALANCE|C.RD_KAFKA_EVENT_OFFSET_COMMIT|C.RD_KAFKA_EVENT_STATS|C.RD_KAFKA_EVENT_ERROR|C.RD_KAFKA_EVENT_OAUTHBEARER_TOKEN_REFRESH)
+	c.handle.setupGlobalCgoMap()
+	C.rd_kafka_conf_set_opaque(cConf, c.handle.globalCgoPointer)
+	if c.handle.tlsConfig != nil {
+		C.cgo_rd_kafka_conf_set_tls_callbacks(cConf)
+	}
 
 	c.handle.rk = C.rd_kafka_new(C.RD_KAFKA_CONSUMER, cConf, cErrstr, 256)
 	if c.handle.rk == nil {
+		c.handle.cleanup()
 		return nil, newErrorFromCString(C.RD_KAFKA_RESP_ERR__INVALID_ARG, cErrstr)
 	}
 
